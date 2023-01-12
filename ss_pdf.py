@@ -46,8 +46,8 @@ file_names_corrected = [file.replace('pdf_files_', '') for file in file_names]
 #does the file exist in the smartsheet already?
 def files_to_add(file_names_corrected, column):
     
-    files_to_upload = ['20221114_Friess_QC.pdf']
-    results_files = []
+    files_to_upload = ['20221111_McMahon_127186-127196_QC.pdf', '20221114_Apte_BioA1.pdf']
+    # results_files = []
 
     # for row in column.rows:
 
@@ -61,7 +61,7 @@ def files_to_add(file_names_corrected, column):
     #         files_to_upload.append(file)
               
     # # print(results_files)
-    # print(files_to_upload)
+    # print('Files to upload:', files_to_upload)
     
     # if files_to_upload == []:
     #     exit('Exiting: No files to upload')
@@ -115,6 +115,7 @@ pdf_results = {}
 # open the pdf files and extract the data using the row id
 try:
     for row in new_rows:
+
         print('gathering from the attachment on row: ', row)
         #get the row id
         row_id = row
@@ -128,21 +129,26 @@ try:
         file_name = attachment.data[0].name
         #get the file path
         file_path = os.path.join(file_dir, 'pdf_files_'+ file_name)
-
+        image_list = []
+        image_filenames = []
+        
         #open the pdf
         with fitz.open(file_path) as pdf:
-            
-            for i in range(len(pdf)):
-                images = pdf[i].get_images()
-                image_list = [individual_image_process(img) for img in images]
-                #use info inside the bytes object to get the image name at index 7
-                image_filenames = [img[7] for img in images]
 
+            for i in range(len(pdf)):
+                
+                #get all images from the pdf
+                images = pdf[i].get_images()
+                #extend image_list with the individual image process
+                image_list.extend([individual_image_process(img) for img in images])
+                # print('image list:', image_list)
+                #get the image name at index 7
+                image_filenames.extend([img[7] for img in images])
+
+            sample_idx = 0  
             #get all pages from the pdf
             for pages in pdf:
-                
-                image_idx = 0
-                sample_idx = 0
+
                 #convert string to list
                 page = pages.get_text().split('\n')
 
@@ -153,6 +159,8 @@ try:
                         sample = page[i+1].strip()
                         if sample == 'RNA Area:':
                             sample = page[i-1].strip()
+                            #if there is a space in the sample name, replace it with an underscore
+                            sample = sample.replace(' ', '_')
                         #update the pdf_results, row_id is the key to a new dict
                         pdf_results[row_id][sample] = {}
                         
@@ -183,8 +191,8 @@ try:
                         new_im.save(f'/Users/billteller/Desktop/project_lee/ss_automation/image_results/{sample}_merged.jpg')
                         #add the merged image to the pdf_results dict
                         pdf_results[row_id][sample]['merged_image'] = f'/Users/billteller/Desktop/project_lee/ss_automation/image_results/{sample}_merged.jpg'
-                        
-                        #increment counter by 2
+
+                        #update the sample_idx  
                         sample_idx += 2
                     
                     if 'RNA Concentration' in line:
@@ -217,6 +225,7 @@ try:
                         Twenty_eight_s_total_area = page[i+10]
                         pdf_results[row_id][sample]['28S % of total Area'] = Twenty_eight_s_total_area
 
+
 except Exception as e:
     #make sure to catch any errors
     print('exception: ', e)
@@ -230,23 +239,28 @@ except Exception as e:
 #         for k1, v1 in v.items():
 #             print(k1, v1)
 
+# print('pdf_results: ', pdf_results)
+
 #add child rows to the sheet with the extracted data
 def child_row_addition(SHEET_ID, ss, sheet_columns_dict, column, pdf_results, new_rows):
 
-    # create a list to store the rows to add
-    rows_to_add = []
-
+    #list to track row ids
+    parents = []
+    #get the rows from the sheet
     for row in new_rows:
         
         #if the row id matches the key in the pdf_results dict
         row_id = row
-
+        #add the row id to the list
+        parents.append(row_id)
+        
+        #loop through the samples in the pdf_results dict
         for sample in pdf_results[row_id]:
             #create a row object
             row = smartsheet.models.Row()
             #set the parent id
             row.parent_id = row_id
-            row.to_top = True
+            row.to_bottom = True
             #add the cells to the row        
             row.cells.append(smartsheet.models.Cell({'column_id': sheet_columns_dict.get('Sample'), 'value': sample}))
             row.cells.append(smartsheet.models.Cell({'column_id': sheet_columns_dict.get('RNA Concentration'), 'value': pdf_results[row_id][sample]['RNA Concentration']}))
@@ -259,59 +273,56 @@ def child_row_addition(SHEET_ID, ss, sheet_columns_dict, column, pdf_results, ne
             
             #copy the format from the first row
             row.format = column.rows[0].format
-            
-            #add the row to the list of rows to add
-            rows_to_add.append(row)
 
-    #add the row to the sheet
-    ss.Sheets.add_rows(SHEET_ID, rows_to_add)
-    return row_id
+            ss.Sheets.add_rows(SHEET_ID, row)
 
 # #add the images to the child rows
-def image_addition(SHEET_ID, ss, sheet_columns_dict, pdf_results, parent_id):
+def image_addition(SHEET_ID, ss, sheet_columns_dict, pdf_results, parent_id):   
     
-    #create a list to store the images to add
-    found = []
     #look for rows that have the parent id of interest
     sheet = ss.Sheets.get_sheet(SHEET_ID)
     rows = sheet.rows
     
-    sample_count = 0
     #index the samples in the pdf_results dict by the sample_count
-    sample_list = list(pdf_results[parent_id].keys())  
-    
-    for row in rows:
+
+    for id in parent_id:
         
-        #if the row has the parent id of interest
-        if row.parent_id == parent_id:
-            found.append(row.id)
-            print('found: ', found)
-            
-            for rows in found:
-     
-                #set the image parameters
-                sheet_id = SHEET_ID
-                column_id = sheet_columns_dict.get('Electropherogram')
-                row_id = rows
-                pic1 = pdf_results[parent_id][sample_list[sample_count]]['image1']
-                pic2 = pdf_results[parent_id][sample_list[sample_count]]['image2']
-                piclist = [pic1, pic2]
-                merged_pic = pdf_results[parent_id][sample_list[sample_count]]['merged_image']
-                file_type = "jpg"
+        #list to track the row ids
+        found = []
+        sample_count = 0
 
-            sample_count += 1 
+        for row in rows:
             
+            #if the row has the parent id of interest
+            if row.parent_id == id:
+                found.append(row.id)
+                print('found: ', found)
+                sample_list = list(pdf_results[id].keys())
+            
+        for f in found:
+
+            #set the image parameters
+            sheet_id = SHEET_ID
+            column_id = sheet_columns_dict.get('Electropherogram')
+            row_id = f
+            pic1 = pdf_results[id][sample_list[sample_count]]['image1']
+            pic2 = pdf_results[id][sample_list[sample_count]]['image2']
+            piclist = [pic1, pic2]
+            merged_pic = pdf_results[id][sample_list[sample_count]]['merged_image']
+            file_type = "jpg"
+
             #add the images to the sheet
-            ss.Cells.add_image_to_cell(sheet_id, row_id, column_id, merged_pic, file_type) 
             
-            for pic in piclist:
-                
-                ss.Attachments.attach_file_to_row(SHEET_ID, row_id, (pic.split('/')[-1], open(pic, 'rb'),'image/jpg'))
-                        
-    
-#add the child rows to the sheet
-parent_id = child_row_addition(SHEET_ID, ss, sheet_columns_dict, column, pdf_results, new_rows)
-print('parent_id: ', parent_id)
+            ss.Cells.add_image_to_cell(sheet_id, row_id, column_id, merged_pic, file_type)
 
-#add the images to the sheet
-image_addition(SHEET_ID, ss, sheet_columns_dict, pdf_results, parent_id)
+            for pic in piclist:
+
+                ss.Attachments.attach_file_to_row(SHEET_ID, row_id, (pic.split('/')[-1], open(pic, 'rb'),'image/jpg'))
+
+            sample_count += 1
+
+#add the child rows to the sheet
+child_row_addition(SHEET_ID, ss, sheet_columns_dict, column, pdf_results, new_rows)
+
+# #add the images to the sheet
+image_addition(SHEET_ID, ss, sheet_columns_dict, pdf_results, new_rows)
